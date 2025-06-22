@@ -21,10 +21,65 @@
 
 package ukanren
 
-/* A micro-Kanren in go, based on the following implementation found in [1]
-in Scheme, by the original authors:
+// A micro-Kanren in go, based on the implementation found in:
+//   Hemann, J., & Friedman, D. P. (2013). "microkanren: A Minimal Functional
+//   Core for Relational Programming". Workshop on Scheme and Functional
+//   Programming, Alexandria, United States.
 
-Variables are represented as vectors (we'll represent them as refs)
+type Atom interface {
+  isAtom()
+}
+
+func (v Atom) isVar() bool {
+  if v.(type) == Variable {
+    return true
+  }
+  return false
+}
+
+func (c Atom) isCons() bool {
+  if v.(type) == Cons {
+    return true
+  }
+  return false
+}
+
+
+type Literal int
+func (lit Literal) isAtom() {}
+
+
+type Variable struct {
+  Atom
+  value int
+}
+func (v Variable) isAtom() {}
+
+
+type Cons struct {
+  head Atom
+  tail *Cons
+}
+func (Cons) isAtom() {}
+
+// These functions allow for passing the property-accessors as parameters
+
+func cons(head Atom, tail *Cons) Cons {
+  return Cons{head, tail}
+}
+
+func (cons Cons) head() Atom {
+  return cons.head
+}
+
+func (cons Cons) tail() *Cons {
+  return cons.tail
+}
+
+
+
+
+/*
 
 (define (var c) (vector c))
 (define (var? x) (vector? x))
@@ -94,7 +149,4 @@ Used in `conj` to apply a goal from one stream to all goals in a second stream.
 		(else (mplus (g (car $)) (bind (cdr $) g)))))
 
 
-[1]: Hemann, J., & Friedman, D. P. (2013). "microkanren: A Minimal Functional
-     Core for Relational Programming". Workshop on Scheme and Functional
-		 Programming, Alexandria, United States.
 */
