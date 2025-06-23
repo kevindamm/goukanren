@@ -26,127 +26,193 @@ package ukanren
 //   Core for Relational Programming". Workshop on Scheme and Functional
 //   Programming, Alexandria, United States.
 
+// All representable values are atoms.
 type Atom interface {
-  isAtom()
+	isAtom()
 }
 
-func (v Atom) isVar() bool {
-  if v.(type) == Variable {
-    return true
-  }
-  return false
+func isVar(v Atom) bool {
+	switch v.(type) {
+	case Variable:
+		return true
+	default:
+		return false
+	}
 }
 
-func (c Atom) isCons() bool {
-  if v.(type) == Cons {
-    return true
-  }
-  return false
+func isCons(c Atom) bool {
+	switch c.(type) {
+	case Cons:
+		return true
+	default:
+		return false
+	}
 }
 
-
+// The only literal type in this implementation is Integer (more can be added).
 type Literal int
+
 func (lit Literal) isAtom() {}
 
-
+// Variable representation, using de Bruijn indices.
 type Variable struct {
-  Atom
-  value int
+	value int
 }
+
 func (v Variable) isAtom() {}
 
-
+// List constructor.
 type Cons struct {
-  head Atom
-  tail *Cons
+	head Atom
+	tail *Cons
 }
+
 func (Cons) isAtom() {}
 
-// These functions allow for passing the property-accessors as parameters
+// Variable substitutions are represented by a mapping of atoms to atoms.
+type Subs map[Atom]Atom
 
-func cons(head Atom, tail *Cons) Cons {
-  return Cons{head, tail}
+func (subs Subs) extend(key Atom, val Atom) Subs {
+	copy := make(Subs)
+	for k, v := range subs {
+		copy[k] = v
+	}
+	copy[key] = val
+	return copy
 }
 
-func (cons Cons) head() Atom {
-  return cons.head
+func (subs Subs) intend(term Atom) Atom {
+	if isVar(term) && subs[term] != nil {
+		return subs.intend(subs[term])
+	}
+	return term
 }
 
-func (cons Cons) tail() *Cons {
-  return cons.tail
+// Unification, the core of any logical language.  Add to this if adding types.
+func unify(t1 Atom, t2 Atom, subs Subs) (Subs, bool) {
+	t1 = subs.intend(t1)
+	t2 = subs.intend(t2)
+
+	// Simple case of identity, return the same mapping.
+	if isVar(t1) && isVar(t2) && t1 == t2 {
+		return subs, true
+	}
+
+	// If t1 is a variable, unify with an updated mapping, t1 adopting t2.
+	if isVar(t1) {
+		return subs.extend(t1, t2), true
+	}
+
+	// If t1 is a variable, unify with an updated mapping, t2 adopting t1.
+	if isVar(t2) {
+		return subs.extend(t2, t1), true
+	}
+
+	// If both are lists, try to unify each of their elements.
+	if isCons(t1) && isCons(t2) {
+		t1, ok1 := t1.(Cons)
+		t2, ok2 := t2.(Cons)
+
+		if ok1 && ok2 {
+			updated, ok := unify(t1.head, t2.head, subs)
+			if ok {
+				return unify(t1.tail, t2.tail, updated)
+			}
+			return nil, false
+		}
+	}
+
+	// If they are not variables or lists, but are equal, they already unify.
+	if t1 == t2 {
+		return subs, true
+	}
+
+	// We've run out of ways it could successfully unify; return failure.
+	return nil, false
 }
 
+// Each State is a successful resolution, returned as elements of a Stream.
+type State struct {
+	vars  Subs
+	count int
+}
 
+func (s State) isAtom() {}
 
+// Streams are the return value of conjunction and disjunction.
+type Stream *Cons
 
-/*
+// (internal) constructor for streams as a result of finding and combining goals.
+func newStream(state State) Stream {
+	stream := new(Cons)
+	stream.head = state
+	stream.tail = nil
+	return stream
+}
 
-(define (var c) (vector c))
-(define (var? x) (vector? x))
-(define (var=? x1 x2)
-  (= (vector-ref x1 0) (vector-ref x2 0)))
+// Goals are closures for converting a state into a stream.
+type Goal func(State) Stream
 
-There is no check for circularities when searching for a variable's value in a substitution
+func EvalGoal(goal Goal) *Cons {
+	state := State{make(Subs), 0}
+	return goal(state)
+}
 
-(define (walk u s)
-	(let ((pr (and (var? u) (assp (λ (v) (var=? u v)) s))))
-		(if pr (walk (cdr pr) s) u)))
+func EvalFresh(fn func(Atom) Goal) Goal {
+	return func(state State) Stream {
+		goal := fn(Variable{state.count})
+		nextState := State{state.vars, state.count + 1}
+		return goal(nextState)
+	}
+}
 
-(define (ext-s x v s)
-	`((,x . ,v) . ,s))
+// Combine all elements of two streams together.
+func append(s1 Stream, s2 Stream) Stream {
+	if s1 == nil {
+		return s2
+	}
+	stream := Cons{s1.head, append(s1.tail, s2)}
+	return &stream
+}
 
-The first of the goal constructors, ≡, returns a goal if the two arguments unify.
+// Combine all results of a goal if they exist in the provided stream.
+func mappend(goal Goal, s Stream) Stream {
+	if s == nil {
+		// Nothing to join with.
+		return nil
+	}
 
-(define (≡ u v)
-	(λ_g (s/c)
-		(let ((s (unify u v (car s/c))))
-			(if s (unit `(,s . ,(cdr s/c))) mzero))))
+	h := s.head
+	state, ok := h.(State)
+	if !ok {
+		return nil
+	}
 
-(define (unit s/c) (cons s/c mzero))
-(define mzero '())
+	stream := append(goal(state), mappend(goal, s.tail))
+	return stream
+}
 
-Basic unification, the core of any logic programming language.
+// Equality is tested by term unification.
+func Equal(t1 Atom, t2 Atom) Goal {
+	return func(state State) Stream {
+		subs, ok := unify(t1, t2, state.vars)
+		if ok {
+			return newStream(State{subs, state.count})
+		}
+		return nil
+	}
+}
 
-(define (unify u v s)
-	(let ((u (walk u s)) (v (walk v s)))
-		(cond
-			((and (var? u) (var? v) (var=? u v)) s)
-			((var? u) (ext- s u v s))
-			((var? v) (ext- s v u s))
-			((and (pair? u) (pair? v))
-			 (let ((s (unify (car u) (car v) s)))
-				 (and s (unify (cdr u) (cdr v) s))))
-			(else (and (eqv? u v) s)))))
+// Disjunction function, accept all results of either goal.
+func Disj(g1 Goal, g2 Goal) Goal {
+	return func(state State) Stream {
+		return append(g1(state), g2(state))
+	}
+}
 
-Creates a new variable, and is also a goal constructor.
-
-(define (call/fresh f)
-	(λ_g (s/c)
-		(let ((c (cdr s/c)))
-			((f (var c)) `(,(car s/c) . ,(+ c 1))))))
-
-Disjunction and Conjunction are goal constructors that combine goals.
-
-(define (disj g1 g2)
-	(λ_g (s/c) (mplus (g1 s/c) (g2 s/c))))
-(define (conj g1 g2)
-	(λ_g (s/c) (bind (g1 s/c) g2)))
-
-Merges two streams
-
-(define (mplus $1 $2)
-	(cond
-		((null? $1) $2)
-		((procedure? $1) (λ_$ () (mplus $2 ($1))))
-		(else (cons (car $1) (mplus (cdr $1) $2)))))
-
-Used in `conj` to apply a goal from one stream to all goals in a second stream.
-
-(define (bind $ g)
-	(cond
-		((null? $) mzero)
-		((procedure? $) (λ_$ () (bind ($) g)))
-		(else (mplus (g (car $)) (bind (cdr $) g)))))
-
-
-*/
+// Conjunction function, accept only states which are results of both goals.
+func Conj(g1 Goal, g2 Goal) Goal {
+	return func(state State) Stream {
+		return mappend(g2, g1(state))
+	}
+}
