@@ -40,15 +40,6 @@ func isVar(v Atom) bool {
 	}
 }
 
-func isCons(c Atom) bool {
-	switch c.(type) {
-	case Cons:
-		return true
-	default:
-		return false
-	}
-}
-
 // The only literal type in this implementation is Integer (more can be added).
 type Literal int
 
@@ -62,12 +53,23 @@ type Variable struct {
 func (v Variable) isAtom() {}
 
 // List constructor.
-type Cons struct {
-	head Atom
-	tail *Cons
-}
+type Cons []Atom
 
 func (Cons) isAtom() {}
+
+func (list Cons) car() Atom {
+	if len(list) > 0 {
+		return list[0]
+	}
+	return nil
+}
+
+func (list Cons) cdr() Atom {
+	if len(list) > 1 {
+		return list[1:]
+	}
+	return nil
+}
 
 // Variable substitutions are represented by a mapping of atoms to atoms.
 type Subs map[Atom]Atom
@@ -109,17 +111,14 @@ func unify(t1 Atom, t2 Atom, subs Subs) (Subs, bool) {
 	}
 
 	// If both are lists, try to unify each of their elements.
-	if isCons(t1) && isCons(t2) {
-		t1, ok1 := t1.(Cons)
-		t2, ok2 := t2.(Cons)
-
-		if ok1 && ok2 {
-			updated, ok := unify(t1.head, t2.head, subs)
-			if ok {
-				return unify(t1.tail, t2.tail, updated)
-			}
-			return nil, false
+	list1, ok1 := t1.(Cons)
+	list2, ok2 := t2.(Cons)
+	if ok1 && ok2 {
+		updated, ok := unify(list1.car(), list2.car(), subs)
+		if ok {
+			return unify(list1.cdr(), list2.cdr(), updated)
 		}
+		return nil, false
 	}
 
 	// If they are not variables or lists, but are equal, they already unify.
@@ -140,20 +139,19 @@ type State struct {
 func (s State) isAtom() {}
 
 // Streams are the return value of conjunction and disjunction.
-type Stream *Cons
+type Stream Cons
 
 // (internal) constructor for streams as a result of finding and combining goals.
 func newStream(state State) Stream {
-	stream := new(Cons)
-	stream.head = state
-	stream.tail = nil
+	stream := make([]Atom, 1)
+	stream[0] = state
 	return stream
 }
 
 // Goals are closures for converting a state into a stream.
 type Goal func(State) Stream
 
-func EvalGoal(goal Goal) *Cons {
+func EvalGoal(goal Goal) Stream {
 	state := State{make(Subs), 0}
 	return goal(state)
 }
@@ -168,27 +166,29 @@ func EvalFresh(fn func(Atom) Goal) Goal {
 
 // Combine all elements of two streams together.
 func append(s1 Stream, s2 Stream) Stream {
-	if s1 == nil {
+	if s1[0] == nil {
 		return s2
 	}
-	stream := Cons{s1.head, append(s1.tail, s2)}
-	return &stream
+	stream := make([]Atom, len(s1)+len(s2))
+	copy(stream, s1)
+	copy(stream[len(s1):], s2)
+	return stream
 }
 
 // Combine all results of a goal if they exist in the provided stream.
 func mappend(goal Goal, s Stream) Stream {
-	if s == nil {
+	if len(s) == 0 {
 		// Nothing to join with.
 		return nil
 	}
 
-	h := s.head
+	h := s[0]
 	state, ok := h.(State)
 	if !ok {
 		return nil
 	}
 
-	stream := append(goal(state), mappend(goal, s.tail))
+	stream := append(goal(state), mappend(goal, s[1:]))
 	return stream
 }
 
